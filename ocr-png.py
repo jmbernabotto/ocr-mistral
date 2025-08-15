@@ -10,12 +10,7 @@ from typing import List, Dict, Any
 import pandas as pd
 from datetime import datetime
 import json
-from reportlab.lib.pagesizes import letter, A4
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, PageBreak, Table, TableStyle
-from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-from reportlab.lib.units import inch
-from reportlab.lib import colors
-from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_JUSTIFY
+import fitz  # PyMuPDF
 
 class StreamlitOCRProcessor:
     """
@@ -91,139 +86,93 @@ class StreamlitOCRProcessor:
                 'timestamp': datetime.now().isoformat()
             }
     
-    def create_pdf_report(self, results: List[Dict[str, Any]]) -> bytes:
-        """Crée un rapport PDF des résultats OCR"""
-        buffer = io.BytesIO()
-        doc = SimpleDocTemplate(buffer, pagesize=A4)
-        styles = getSampleStyleSheet()
-        story = []
-        
-        # Styles personnalisés
-        title_style = ParagraphStyle(
-            'CustomTitle',
-            parent=styles['Heading1'],
-            fontSize=24,
-            spaceAfter=30,
-            alignment=TA_CENTER,
-            textColor=colors.darkblue
-        )
-        
-        subtitle_style = ParagraphStyle(
-            'CustomSubtitle',
-            parent=styles['Heading2'],
-            fontSize=16,
-            spaceAfter=20,
-            alignment=TA_LEFT,
-            textColor=colors.darkblue
-        )
-        
-        content_style = ParagraphStyle(
-            'CustomContent',
-            parent=styles['Normal'],
-            fontSize=10,
-            spaceAfter=12,
-            alignment=TA_JUSTIFY,
-            leftIndent=20
-        )
-        
-        filename_style = ParagraphStyle(
-            'FilenameStyle',
-            parent=styles['Normal'],
-            fontSize=12,
-            spaceAfter=8,
-            textColor=colors.darkgreen,
-            fontName='Helvetica-Bold'
-        )
-        
-        # Page de titre
-        story.append(Paragraph("🤖 Rapport d'Extraction OCR", title_style))
-        story.append(Spacer(1, 20))
-        
-        # Statistiques
-        success_count = sum(1 for r in results if r['status'] == 'success')
-        error_count = len(results) - success_count
-        
-        stats_data = [
-            ['Métrique', 'Valeur'],
-            ['📄 Total de fichiers', str(len(results))],
-            ['✅ Extractions réussies', str(success_count)],
-            ['❌ Erreurs', str(error_count)],
-            ['📅 Date de traitement', datetime.now().strftime('%d/%m/%Y à %H:%M')],
-            ['⚡ Taux de réussite', f'{(success_count/len(results)*100):.1f}%' if results else '0%']
-        ]
-        
-        stats_table = Table(stats_data, colWidths=[3*inch, 2*inch])
-        stats_table.setStyle(TableStyle([
-            ('BACKGROUND', (0, 0), (-1, 0), colors.darkblue),
-            ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
-            ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
-            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-            ('FONTSIZE', (0, 0), (-1, 0), 12),
-            ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
-            ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
-            ('GRID', (0, 0), (-1, -1), 1, colors.black),
-            ('FONTSIZE', (0, 1), (-1, -1), 10),
-            ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.lightgrey])
-        ]))
-        
-        story.append(stats_table)
-        story.append(PageBreak())
-        
-        # Contenus extraits
-        story.append(Paragraph("📋 Textes Extraits", subtitle_style))
-        story.append(Spacer(1, 20))
-        
-        for i, result in enumerate(results):
-            if result['status'] == 'success' and result['text'].strip():
-                # Nom du fichier
-                story.append(Paragraph(f"📄 {result['filename']}", filename_style))
-                
-                # Texte extrait (limité pour éviter les pages trop longues)
-                text = result['text'].strip()
-                if len(text) > 1000:
-                    text = text[:1000] + "... [texte tronqué]"
-                
-                # Échapper les caractères spéciaux pour ReportLab
-                text = text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
-                
-                story.append(Paragraph(text, content_style))
-                story.append(Spacer(1, 15))
-                
-                # Saut de page tous les 3 documents pour éviter la surcharge
-                if (i + 1) % 3 == 0 and i < len(results) - 1:
-                    story.append(PageBreak())
-        
-        # Section des erreurs si il y en a
-        error_results = [r for r in results if r['status'] == 'error']
-        if error_results:
-            story.append(PageBreak())
-            story.append(Paragraph("⚠️ Erreurs de Traitement", subtitle_style))
-            story.append(Spacer(1, 20))
+    def create_pdf_from_text(self, filename: str, extracted_text: str) -> bytes:
+        """Crée un PDF contenant le texte extrait d'une image"""
+        try:
+            # Créer un nouveau document PDF
+            doc = fitz.open()
             
-            for result in error_results:
-                story.append(Paragraph(f"❌ {result['filename']}", filename_style))
-                error_text = result['error'].replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
-                story.append(Paragraph(f"Erreur: {error_text}", content_style))
-                story.append(Spacer(1, 10))
-        
-        # Pied de page
-        story.append(PageBreak())
-        story.append(Spacer(1, 200))
-        footer_style = ParagraphStyle(
-            'Footer',
-            parent=styles['Normal'],
-            fontSize=10,
-            alignment=TA_CENTER,
-            textColor=colors.grey
-        )
-        story.append(Paragraph("Généré par OCR Streamlit App - Powered by Mistral AI", footer_style))
-        
-        doc.build(story)
-        buffer.seek(0)
-        return buffer.getvalue()
+            # Ajouter une page
+            page = doc.new_page()
+            
+            # Définir les marges et la zone de texte
+            margin = 50
+            page_width = page.rect.width
+            page_height = page.rect.height
+            text_rect = fitz.Rect(margin, margin, page_width - margin, page_height - margin)
+            
+            # Titre avec le nom du fichier source
+            title = f"Texte extrait de: {filename}"
+            page.insert_text(
+                (margin, margin + 20),
+                title,
+                fontsize=14,
+                fontname="helv-bold",
+                color=(0, 0, 0.8)
+            )
+            
+            # Ligne de séparation
+            line_y = margin + 40
+            page.draw_line(
+                fitz.Point(margin, line_y),
+                fitz.Point(page_width - margin, line_y),
+                color=(0.7, 0.7, 0.7),
+                width=1
+            )
+            
+            # Insérer le texte extrait
+            text_start_y = margin + 60
+            remaining_text = extracted_text
+            current_y = text_start_y
+            
+            while remaining_text and current_y < page_height - margin:
+                # Calculer combien de texte peut tenir sur cette page
+                available_height = page_height - current_y - margin
+                text_rect_current = fitz.Rect(margin, current_y, page_width - margin, current_y + available_height)
+                
+                # Insérer le texte avec retour à la ligne automatique
+                text_inserted = page.insert_textbox(
+                    text_rect_current,
+                    remaining_text,
+                    fontsize=11,
+                    fontname="helv",
+                    align=fitz.TEXT_ALIGN_LEFT,
+                    color=(0, 0, 0)
+                )
+                
+                # Si tout le texte n'a pas pu être inséré, créer une nouvelle page
+                if text_inserted < len(remaining_text):
+                    # Trouver où le texte a été coupé
+                    words = remaining_text.split()
+                    words_inserted = 0
+                    char_count = 0
+                    
+                    for word in words:
+                        if char_count + len(word) + 1 > text_inserted:
+                            break
+                        char_count += len(word) + 1
+                        words_inserted += 1
+                    
+                    remaining_text = ' '.join(words[words_inserted:])
+                    
+                    # Nouvelle page
+                    page = doc.new_page()
+                    current_y = margin
+                else:
+                    remaining_text = ""
+            
+            # Sauvegarder le PDF en mémoire
+            pdf_bytes = doc.tobytes()
+            doc.close()
+            
+            return pdf_bytes
+            
+        except Exception as e:
+            print(f"Erreur lors de la création du PDF pour {filename}: {e}")
+            return None
     
     def create_results_zip(self, results: List[Dict[str, Any]]) -> bytes:
-        """Crée un fichier ZIP avec les résultats"""
+        """Crée un fichier ZIP avec les PDFs générés"""
         zip_buffer = io.BytesIO()
         
         with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
@@ -233,18 +182,17 @@ class StreamlitOCRProcessor:
             df.to_csv(csv_buffer, index=False)
             zip_file.writestr('ocr_summary.csv', csv_buffer.getvalue())
             
-            # Fichiers texte individuels
+            # Créer un PDF pour chaque image traitée avec succès
             for result in results:
                 if result['status'] == 'success' and result['text'].strip():
-                    filename = Path(result['filename']).stem + '.txt'
-                    zip_file.writestr(f'extracted_texts/{filename}', result['text'])
+                    filename_stem = Path(result['filename']).stem
+                    pdf_data = self.create_pdf_from_text(result['filename'], result['text'])
+                    
+                    if pdf_data:
+                        zip_file.writestr(f'pdfs/{filename_stem}.pdf', pdf_data)
             
             # Fichier JSON avec tous les détails
             zip_file.writestr('ocr_results.json', json.dumps(results, indent=2, ensure_ascii=False))
-            
-            # Rapport PDF
-            pdf_data = self.create_pdf_report(results)
-            zip_file.writestr('rapport_ocr.pdf', pdf_data)
         
         zip_buffer.seek(0)
         return zip_buffer.getvalue()
@@ -404,28 +352,61 @@ def main():
                         col1, col2 = st.columns(2)
                         
                         with col1:
-                            # ZIP complet
+                            # ZIP avec PDFs
                             zip_data = processor.create_results_zip(results)
                             st.download_button(
-                                label="📦 Télécharger ZIP complet",
+                                label="📦 Télécharger ZIP avec PDFs",
                                 data=zip_data,
-                                file_name=f"ocr_results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip",
+                                file_name=f"ocr_pdfs_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip",
                                 mime="application/zip",
                                 type="primary",
                                 use_container_width=True
                             )
                         
                         with col2:
-                            # PDF seul
-                            pdf_data = processor.create_pdf_report(results)
-                            st.download_button(
-                                label="📄 Télécharger rapport PDF",
-                                data=pdf_data,
-                                file_name=f"rapport_ocr_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf",
-                                mime="application/pdf",
-                                type="secondary",
-                                use_container_width=True
-                            )
+                            # Téléchargement PDF individuel pour le premier fichier réussi
+                            first_success = next((r for r in results if r['status'] == 'success'), None)
+                            if first_success:
+                                pdf_data = processor.create_pdf_from_text(
+                                    first_success['filename'], 
+                                    first_success['text']
+                                )
+                                if pdf_data:
+                                    filename_stem = Path(first_success['filename']).stem
+                                    st.download_button(
+                                        label=f"📄 PDF: {filename_stem}",
+                                        data=pdf_data,
+                                        file_name=f"{filename_stem}.pdf",
+                                        mime="application/pdf",
+                                        type="secondary",
+                                        use_container_width=True
+                                    )
+                        
+                        # Section pour télécharger des PDFs individuels
+                        with st.expander("📄 Télécharger PDFs individuels"):
+                            success_results = [r for r in results if r['status'] == 'success']
+                            
+                            # Organiser en colonnes de 3
+                            cols_per_row = 3
+                            for i in range(0, len(success_results), cols_per_row):
+                                cols = st.columns(cols_per_row)
+                                
+                                for j, result in enumerate(success_results[i:i+cols_per_row]):
+                                    with cols[j]:
+                                        pdf_data = processor.create_pdf_from_text(
+                                            result['filename'], 
+                                            result['text']
+                                        )
+                                        if pdf_data:
+                                            filename_stem = Path(result['filename']).stem
+                                            st.download_button(
+                                                label=f"📄 {filename_stem}",
+                                                data=pdf_data,
+                                                file_name=f"{filename_stem}.pdf",
+                                                mime="application/pdf",
+                                                key=f"pdf_{i}_{j}",
+                                                use_container_width=True
+                                            )
                         
                         # Options supplémentaires
                         with st.expander("📋 Autres formats"):
@@ -449,37 +430,38 @@ def main():
                         
                         st.info("""
                         **📦 Le fichier ZIP contient:**
-                        - `rapport_ocr.pdf`: Rapport complet formaté
+                        - `pdfs/`: Dossier avec un PDF par image traitée
                         - `ocr_summary.csv`: Résumé au format CSV
-                        - `extracted_texts/`: Dossier avec les textes extraits (.txt)
                         - `ocr_results.json`: Données complètes au format JSON
                         
-                        **📄 Le rapport PDF inclut:**
-                        - Statistiques détaillées du traitement
-                        - Tous les textes extraits avec mise en page
-                        - Rapport des erreurs (si applicable)
+                        **📄 Chaque PDF contient:**
+                        - Le nom du fichier source en en-tête
+                        - Le texte extrait de l'image formaté
+                        - Pagination automatique si le texte est long
                         """)
                         
-                        # Aperçu PDF dans l'interface
-                        with st.expander("👁️ Aperçu du rapport PDF"):
-                            st.markdown(f"""
-                            **Titre:** 🤖 Rapport d'Extraction OCR  
-                            **Date:** {datetime.now().strftime('%d/%m/%Y à %H:%M')}  
-                            **Total fichiers:** {len(results)}  
-                            **Succès:** {success_count}  
-                            **Erreurs:** {error_count}  
-                            **Taux de réussite:** {(success_count/len(results)*100):.1f}%
-                            """)
+                        # Aperçu des PDFs
+                        with st.expander("👁️ Aperçu des PDFs générés"):
+                            success_results = [r for r in results if r['status'] == 'success']
                             
-                            if success_count > 0:
-                                st.write("**Aperçu des premières extractions:**")
-                                for i, result in enumerate([r for r in results if r['status'] == 'success'][:3]):
-                                    st.write(f"📄 **{result['filename']}**")
+                            if success_results:
+                                st.write(f"**{len(success_results)} PDFs seront générés:**")
+                                
+                                for i, result in enumerate(success_results[:5]):  # Afficher max 5
+                                    filename_stem = Path(result['filename']).stem
                                     preview_text = result['text'][:200]
                                     if len(result['text']) > 200:
                                         preview_text += "..."
-                                    st.write(f"_{preview_text}_")
+                                    
+                                    st.write(f"📄 **{filename_stem}.pdf**")
+                                    st.write(f"Source: {result['filename']}")
+                                    st.write(f"Aperçu: _{preview_text}_")
                                     st.write("---")
+                                
+                                if len(success_results) > 5:
+                                    st.write(f"... et {len(success_results) - 5} autres PDFs")
+                            else:
+                                st.write("Aucun PDF à générer (aucune extraction réussie)")
         
         except Exception as e:
             st.error(f"Erreur lors de l'initialisation: {e}")
