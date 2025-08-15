@@ -293,3 +293,229 @@ class PronoteOCRExtractor:
             for pattern in patterns:
                 if pattern.lower() in text_lower:
                     if 'interdit' in pattern.lower():
+                        info['autorisations'][key] = False
+                    else:
+                        info['autorisations'][key] = True
+                    break
+        
+        return info
+
+def main():
+    st.set_page_config(
+        page_title="Extracteur PRONOTE",
+        page_icon="📇",
+        layout="wide"
+    )
+    
+    st.title("📇 Extracteur de Fiches PRONOTE")
+    st.markdown("**Extraction optimisée pour les captures d'écran PRONOTE**")
+    
+    # Sidebar
+    with st.sidebar:
+        st.header("⚙️ Configuration")
+        api_key = st.text_input(
+            "Clé API Mistral",
+            type="password",
+            help="Entrez votre clé API Mistral"
+        )
+        
+        st.divider()
+        
+        show_debug = st.checkbox(
+            "Mode debug",
+            help="Affiche le texte brut extrait par l'OCR"
+        )
+    
+    if not api_key:
+        st.warning("⚠️ Veuillez entrer votre clé API Mistral dans la barre latérale")
+        st.stop()
+    
+    # Upload
+    uploaded_files = st.file_uploader(
+        "Chargez vos captures d'écran PRONOTE",
+        type=['png', 'jpg', 'jpeg'],
+        accept_multiple_files=True
+    )
+    
+    if uploaded_files:
+        st.info(f"📁 {len(uploaded_files)} fichier(s) chargé(s)")
+        
+        if st.button("🚀 Extraire les informations", type="primary"):
+            extractor = PronoteOCRExtractor()
+            results = []
+            
+            progress = st.progress(0)
+            status_text = st.empty()
+            
+            for idx, file in enumerate(uploaded_files):
+                progress.progress((idx + 1) / len(uploaded_files))
+                status_text.text(f"Traitement de {file.name}...")
+                
+                # Traitement
+                image_bytes = file.read()
+                result = extractor.process_image(api_key, image_bytes, file.name)
+                results.append(result)
+                file.seek(0)
+            
+            status_text.text("✅ Extraction terminée!")
+            
+            # Affichage des résultats
+            st.header("📊 Résultats")
+            
+            for result in results:
+                if result['status'] == 'success':
+                    with st.expander(f"📄 {result['filename']}", expanded=True):
+                        
+                        # Mode debug - afficher le texte brut
+                        if show_debug:
+                            with st.expander("🔍 Texte brut OCR"):
+                                st.text_area(
+                                    "Texte extrait",
+                                    value=result.get('texte_brut', ''),
+                                    height=200,
+                                    key=f"debug_{result['filename']}"
+                                )
+                        
+                        col1, col2 = st.columns(2)
+                        
+                        with col1:
+                            st.markdown("**🏫 Informations élève**")
+                            if result['etablissement']:
+                                st.write(f"📍 Établissement: **{result['etablissement']}**")
+                            if result['eleve_nom']:
+                                st.write(f"👤 Élève: **{result['eleve_nom']}**")
+                            if result['classe']:
+                                st.write(f"📚 Classe: **{result['classe']}**")
+                            
+                            st.divider()
+                            
+                            st.markdown("**👨‍👩‍👧 Responsable légal**")
+                            resp = result['responsable']
+                            if resp['nom_complet']:
+                                st.write(f"👤 {resp['nom_complet']}")
+                            elif resp['nom'] and resp['prenom']:
+                                st.write(f"👤 {resp['nom']} {resp['prenom']}")
+                            if resp['relation']:
+                                st.write(f"👥 Relation: **{resp['relation']}**")
+                            if resp['statut']:
+                                st.write(f"⚖️ Statut: **{resp['statut']}**")
+                            if resp['situation']:
+                                st.write(f"💑 Situation: {resp['situation']}")
+                            if resp['profession']:
+                                prof_short = resp['profession'][:60] + "..." if len(resp['profession']) > 60 else resp['profession']
+                                st.write(f"💼 Profession: {prof_short}")
+                        
+                        with col2:
+                            st.markdown("**📞 Coordonnées**")
+                            if resp['adresse']:
+                                st.write(f"🏠 {resp['adresse']}")
+                            if resp['code_postal'] or resp['ville']:
+                                ville_str = f"📍 {resp['code_postal'] or ''} {resp['ville'] or ''}".strip()
+                                if ville_str != "📍":
+                                    st.write(ville_str)
+                            if resp['pays']:
+                                st.write(f"🌍 {resp['pays']}")
+                            if resp['telephone_fixe']:
+                                st.write(f"☎️ Fixe: **{resp['telephone_fixe']}**")
+                            if resp['telephone_mobile']:
+                                st.write(f"📱 Mobile: **{resp['telephone_mobile']}**")
+                            
+                            st.divider()
+                            
+                            st.markdown("**✉️ Autorisations**")
+                            auth = result['autorisations']
+                            col_a, col_b = st.columns(2)
+                            with col_a:
+                                st.write(f"SMS: {'✅' if auth['sms'] else '❌'}")
+                                st.write(f"Email: {'✅' if auth['email'] else '❌'}")
+                            with col_b:
+                                st.write(f"Courrier: {'✅' if auth['courrier'] else '❌'}")
+                                st.write(f"Discussion: {'✅' if auth['discussion'] else '❌'}")
+                
+                else:
+                    st.error(f"❌ Erreur pour {result['filename']}: {result.get('error', 'Inconnue')}")
+            
+            # Export uniquement si au moins un succès
+            success_results = [r for r in results if r['status'] == 'success']
+            
+            if success_results:
+                st.header("💾 Export des données")
+                
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    # Export TXT
+                    txt_export = []
+                    for r in success_results:
+                        txt_export.append(f"{'='*60}")
+                        txt_export.append(f"FICHIER: {r['filename']}")
+                        txt_export.append(f"{'='*60}")
+                        
+                        if r['etablissement']:
+                            txt_export.append(f"ÉTABLISSEMENT: {r['etablissement']}")
+                        if r['eleve_nom']:
+                            txt_export.append(f"ÉLÈVE: {r['eleve_nom']}")
+                        if r['classe']:
+                            txt_export.append(f"CLASSE: {r['classe']}")
+                        
+                        txt_export.append(f"\nRESPONSABLE LÉGAL:")
+                        resp = r['responsable']
+                        if resp['nom_complet']:
+                            txt_export.append(f"  Nom: {resp['nom_complet']}")
+                        if resp['relation']:
+                            txt_export.append(f"  Relation: {resp['relation']}")
+                        if resp['statut']:
+                            txt_export.append(f"  Statut: {resp['statut']}")
+                        if resp['profession']:
+                            txt_export.append(f"  Profession: {resp['profession']}")
+                        if resp['situation']:
+                            txt_export.append(f"  Situation: {resp['situation']}")
+                        if resp['adresse']:
+                            txt_export.append(f"  Adresse: {resp['adresse']}")
+                        if resp['code_postal'] and resp['ville']:
+                            txt_export.append(f"  {resp['code_postal']} {resp['ville']}")
+                        if resp['pays']:
+                            txt_export.append(f"  Pays: {resp['pays']}")
+                        if resp['telephone_fixe']:
+                            txt_export.append(f"  Tél. fixe: {resp['telephone_fixe']}")
+                        if resp['telephone_mobile']:
+                            txt_export.append(f"  Tél. mobile: {resp['telephone_mobile']}")
+                        
+                        txt_export.append(f"\nAUTORISATIONS:")
+                        auth = r['autorisations']
+                        txt_export.append(f"  SMS: {'OUI' if auth['sms'] else 'NON'}")
+                        txt_export.append(f"  Email: {'OUI' if auth['email'] else 'NON'}")
+                        txt_export.append(f"  Courrier: {'OUI' if auth['courrier'] else 'NON'}")
+                        txt_export.append(f"  Discussion: {'OUI' if auth['discussion'] else 'NON'}")
+                        txt_export.append("\n")
+                    
+                    txt_content = "\n".join(txt_export)
+                    
+                    st.download_button(
+                        label="📝 Télécharger TXT",
+                        data=txt_content,
+                        file_name=f"fiches_pronote_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt",
+                        mime="text/plain",
+                        use_container_width=True
+                    )
+                
+                with col2:
+                    # Export JSON
+                    json_results = []
+                    for r in success_results:
+                        # Nettoyer pour JSON (retirer texte_brut)
+                        clean_result = {k: v for k, v in r.items() if k != 'texte_brut'}
+                        json_results.append(clean_result)
+                    
+                    json_content = json.dumps(json_results, indent=2, ensure_ascii=False)
+                    
+                    st.download_button(
+                        label="📋 Télécharger JSON",
+                        data=json_content,
+                        file_name=f"fiches_pronote_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
+                        mime="application/json",
+                        use_container_width=True
+                    )
+
+if __name__ == "__main__":
+    main()
