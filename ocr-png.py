@@ -47,42 +47,51 @@ class StreamlitOCRProcessor:
     def extract_clean_text(self, ocr_response) -> str:
         """Extrait le texte propre de la réponse OCR Mistral"""
         try:
-            # Si c'est une réponse avec structure pages/markdown
-            if isinstance(ocr_response, dict) and 'pages' in str(ocr_response):
-                # Extraire le markdown du premier élément pages
-                response_str = str(ocr_response)
-                
-                # Chercher le pattern markdown="..."
-                import re
-                markdown_match = re.search(r'markdown="([^"]*(?:\\.[^"]*)*)"', response_str)
-                if markdown_match:
-                    markdown_text = markdown_match.group(1)
-                    # Décoder les échappements
-                    clean_text = markdown_text.replace('\\n', '\n').replace('\\"', '"').replace('\\\\', '\\')
+            # Méthode 1: Accès direct aux attributs de l'objet
+            if hasattr(ocr_response, 'pages') and ocr_response.pages:
+                page = ocr_response.pages[0]
+                if hasattr(page, 'markdown'):
+                    return page.markdown.strip()
+            
+            # Méthode 2: Conversion en string et extraction par regex brutale
+            response_str = str(ocr_response)
+            
+            # Pattern plus robuste pour extraire le contenu markdown
+            import re
+            
+            # Chercher markdown=" jusqu'à la prochaine occurrence de ", en gérant les échappements
+            pattern = r'markdown="(.*?)"(?=,\s*images=)'
+            match = re.search(pattern, response_str, re.DOTALL)
+            
+            if match:
+                markdown_content = match.group(1)
+                # Décoder les échappements
+                clean_text = (markdown_content
+                             .replace('\\n', '\n')
+                             .replace('\\t', '\t')  
+                             .replace('\\"', '"')
+                             .replace('\\\\', '\\'))
+                return clean_text.strip()
+            
+            # Méthode 3: Extraction plus simple avec split
+            if 'markdown="' in response_str:
+                parts = response_str.split('markdown="', 1)
+                if len(parts) > 1:
+                    # Prendre tout jusqu'à ", images=
+                    content_part = parts[1].split('", images=')[0]
+                    clean_text = (content_part
+                                 .replace('\\n', '\n')
+                                 .replace('\\t', '\t')
+                                 .replace('\\"', '"')
+                                 .replace('\\\\', '\\'))
                     return clean_text.strip()
             
-            # Méthodes d'extraction classiques
-            if hasattr(ocr_response, 'text'):
-                return ocr_response.text.strip()
-            elif isinstance(ocr_response, dict):
-                if 'text' in ocr_response:
-                    return ocr_response['text'].strip()
-                elif 'choices' in ocr_response and len(ocr_response['choices']) > 0:
-                    choice = ocr_response['choices'][0]
-                    if isinstance(choice, dict):
-                        if 'message' in choice and 'content' in choice['message']:
-                            return choice['message']['content'].strip()
-                        elif 'text' in choice:
-                            return choice['text'].strip()
-                    return str(choice).strip()
-                elif 'content' in ocr_response:
-                    return ocr_response['content'].strip()
-            
-            return str(ocr_response).strip()
+            # Fallback
+            return "[Impossible d'extraire le texte de cette image]"
             
         except Exception as e:
-            st.warning(f"Erreur extraction texte: {e}")
-            return str(ocr_response)[:1000]  # Fallback avec limitation
+            st.error(f"Erreur extraction: {e}")
+            return f"[Erreur extraction: {str(e)}]"
 
     def process_single_image(self, client: Mistral, image_bytes: bytes, filename: str) -> Dict[str, Any]:
         """Traite une seule image avec OCR"""
@@ -99,14 +108,44 @@ class StreamlitOCRProcessor:
                 include_image_base64=False
             )
             
+            # Debug détaillé pour comprendre la structure
+            st.write(f"🔍 Debug pour {filename}:")
+            st.write(f"Type: {type(ocr_response)}")
+            
+            # Afficher les attributs disponibles
+            if hasattr(ocr_response, '__dict__'):
+                attrs = [attr for attr in dir(ocr_response) if not attr.startswith('_')]
+                st.write(f"Attributs: {attrs}")
+                
+                # Tester l'accès aux pages
+                if hasattr(ocr_response, 'pages'):
+                    st.write(f"Pages trouvées: {len(ocr_response.pages)}")
+                    if ocr_response.pages:
+                        page = ocr_response.pages[0]
+                        st.write(f"Premier page type: {type(page)}")
+                        if hasattr(page, 'markdown'):
+                            markdown_content = page.markdown
+                            st.write(f"Markdown trouvé: {len(markdown_content)} caractères")
+                            st.write(f"Début du markdown: {markdown_content[:100]}...")
+            
             # Extraction propre du texte
             extracted_text = self.extract_clean_text(ocr_response)
             
-            # Debug simplifié
-            st.write(f"✅ {filename}: {len(extracted_text)} caractères extraits")
-            if len(extracted_text) > 0:
-                preview = extracted_text[:100].replace('\n', ' ')
-                st.write(f"📝 Aperçu: {preview}...")
+            # Vérifier si l'extraction a fonctionné
+            if extracted_text.startswith('[Erreur'):
+                st.error(f"❌ Échec extraction pour {filename}: {extracted_text}")
+                # Essayer une extraction directe simple
+                if hasattr(ocr_response, 'pages') and ocr_response.pages:
+                    try:
+                        extracted_text = ocr_response.pages[0].markdown
+                        st.write("✅ Extraction directe réussie!")
+                    except:
+                        extracted_text = "Erreur d'extraction du texte"
+            else:
+                st.write(f"✅ {filename}: {len(extracted_text)} caractères extraits")
+                if len(extracted_text) > 0:
+                    preview = extracted_text[:100].replace('\n', ' ')
+                    st.write(f"📝 Aperçu: {preview}...")
             
             return {
                 'filename': filename,
