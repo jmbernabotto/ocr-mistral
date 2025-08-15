@@ -59,15 +59,50 @@ class StreamlitOCRProcessor:
                 include_image_base64=False  # Économise de la bande passante
             )
             
-            # Extraction du texte selon la structure de réponse
+            # Extraction du texte avec debugging amélioré
             extracted_text = ""
+            
+            # Debug: afficher la structure de la réponse
+            st.write(f"🔍 Debug pour {filename}:")
+            st.write(f"Type de réponse: {type(ocr_response)}")
+            
             if hasattr(ocr_response, 'text'):
                 extracted_text = ocr_response.text
+                st.write(f"✅ Texte trouvé via .text: {len(extracted_text)} caractères")
             elif isinstance(ocr_response, dict):
+                st.write(f"📋 Clés disponibles: {list(ocr_response.keys())}")
+                
                 if 'text' in ocr_response:
                     extracted_text = ocr_response['text']
+                    st.write(f"✅ Texte trouvé via ['text']: {len(extracted_text)} caractères")
                 elif 'choices' in ocr_response and len(ocr_response['choices']) > 0:
-                    extracted_text = ocr_response['choices'][0].get('message', {}).get('content', '')
+                    choice = ocr_response['choices'][0]
+                    if isinstance(choice, dict):
+                        if 'message' in choice and 'content' in choice['message']:
+                            extracted_text = choice['message']['content']
+                            st.write(f"✅ Texte trouvé via choices[0].message.content: {len(extracted_text)} caractères")
+                        elif 'text' in choice:
+                            extracted_text = choice['text']
+                            st.write(f"✅ Texte trouvé via choices[0].text: {len(extracted_text)} caractères")
+                    else:
+                        extracted_text = str(choice)
+                        st.write(f"✅ Texte trouvé via choices[0] (string): {len(extracted_text)} caractères")
+                elif 'content' in ocr_response:
+                    extracted_text = ocr_response['content']
+                    st.write(f"✅ Texte trouvé via ['content']: {len(extracted_text)} caractères")
+                else:
+                    st.write("❌ Aucune structure de texte reconnue")
+                    st.write(f"Réponse complète: {ocr_response}")
+            else:
+                extracted_text = str(ocr_response)
+                st.write(f"⚠️ Conversion en string: {len(extracted_text)} caractères")
+            
+            # Nettoyer le texte extrait
+            if extracted_text:
+                extracted_text = extracted_text.strip()
+                
+            # Debug final
+            st.write(f"📝 Texte final: '{extracted_text[:100]}...' ({len(extracted_text)} chars)")
             
             return {
                 'filename': filename,
@@ -78,6 +113,7 @@ class StreamlitOCRProcessor:
             }
             
         except Exception as e:
+            st.error(f"❌ Erreur OCR pour {filename}: {e}")
             return {
                 'filename': filename,
                 'status': 'error',
@@ -217,11 +253,14 @@ class StreamlitOCRProcessor:
                 if result['status'] == 'success':
                     filename_stem = Path(result['filename']).stem
                     
-                    # Préparer le texte (même si vide)
-                    text_to_use = result['text'] if result['text'].strip() else "Aucun texte détecté dans cette image."
+                    # Utiliser le texte tel quel, même si c'est une chaîne vide
+                    original_text = result['text'] if result['text'] else ""
+                    
+                    # Pour les fichiers : utiliser le texte original, pas de message par défaut
+                    text_for_files = original_text if original_text.strip() else "Aucun texte détecté dans cette image."
                     
                     # Créer le PDF
-                    pdf_data = self.create_pdf_from_text(result['filename'], text_to_use)
+                    pdf_data = self.create_pdf_from_text(result['filename'], text_for_files)
                     if pdf_data:
                         zip_file.writestr(f'pdfs/{filename_stem}.pdf', pdf_data)
                         pdf_count += 1
@@ -230,11 +269,17 @@ class StreamlitOCRProcessor:
                     
                     # Créer le fichier TXT
                     try:
-                        # Ajouter header avec nom du fichier source
+                        # Pour le TXT, afficher le texte original même si vide
                         txt_content = f"Fichier source: {result['filename']}\n"
                         txt_content += f"Date d'extraction: {result['timestamp']}\n"
+                        txt_content += f"Statut: {result['status']}\n"
+                        txt_content += f"Longueur du texte: {len(original_text)} caractères\n"
                         txt_content += "-" * 50 + "\n\n"
-                        txt_content += text_to_use
+                        
+                        if original_text.strip():
+                            txt_content += original_text
+                        else:
+                            txt_content += "[Aucun texte détecté ou texte vide]"
                         
                         zip_file.writestr(f'txt/{filename_stem}.txt', txt_content)
                         txt_count += 1
