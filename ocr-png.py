@@ -199,7 +199,7 @@ class StreamlitOCRProcessor:
             return self.create_simple_pdf_fallback(filename, extracted_text)
     
     def create_results_zip(self, results: List[Dict[str, Any]]) -> bytes:
-        """Crée un fichier ZIP avec les PDFs générés"""
+        """Crée un fichier ZIP avec les PDFs et TXT générés"""
         zip_buffer = io.BytesIO()
         
         with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
@@ -209,25 +209,41 @@ class StreamlitOCRProcessor:
             df.to_csv(csv_buffer, index=False)
             zip_file.writestr('ocr_summary.csv', csv_buffer.getvalue())
             
-            # Créer un PDF pour chaque image traitée avec succès
+            # Créer PDF et TXT pour chaque image traitée avec succès
             pdf_count = 0
+            txt_count = 0
+            
             for result in results:
                 if result['status'] == 'success':
                     filename_stem = Path(result['filename']).stem
                     
-                    # Créer le PDF même si le texte est vide
+                    # Préparer le texte (même si vide)
                     text_to_use = result['text'] if result['text'].strip() else "Aucun texte détecté dans cette image."
-                    pdf_data = self.create_pdf_from_text(result['filename'], text_to_use)
                     
+                    # Créer le PDF
+                    pdf_data = self.create_pdf_from_text(result['filename'], text_to_use)
                     if pdf_data:
                         zip_file.writestr(f'pdfs/{filename_stem}.pdf', pdf_data)
                         pdf_count += 1
                     else:
                         st.warning(f"Impossible de créer le PDF pour {result['filename']}")
+                    
+                    # Créer le fichier TXT
+                    try:
+                        # Ajouter header avec nom du fichier source
+                        txt_content = f"Fichier source: {result['filename']}\n"
+                        txt_content += f"Date d'extraction: {result['timestamp']}\n"
+                        txt_content += "-" * 50 + "\n\n"
+                        txt_content += text_to_use
+                        
+                        zip_file.writestr(f'txt/{filename_stem}.txt', txt_content)
+                        txt_count += 1
+                    except Exception as e:
+                        st.warning(f"Impossible de créer le TXT pour {result['filename']}: {e}")
             
-            # Log du nombre de PDFs créés
-            if pdf_count > 0:
-                st.success(f"✅ {pdf_count} PDF(s) créé(s) avec succès!")
+            # Log du nombre de fichiers créés
+            if pdf_count > 0 or txt_count > 0:
+                st.success(f"✅ {pdf_count} PDF(s) et {txt_count} TXT créé(s) avec succès!")
             
             # Fichier JSON avec tous les détails
             zip_file.writestr('ocr_results.json', json.dumps(results, indent=2, ensure_ascii=False))
@@ -390,12 +406,12 @@ def main():
                         col1, col2 = st.columns(2)
                         
                         with col1:
-                            # ZIP avec PDFs
+                            # ZIP avec PDFs et TXT
                             zip_data = processor.create_results_zip(results)
                             st.download_button(
-                                label="📦 Télécharger ZIP avec PDFs",
+                                label="📦 Télécharger ZIP (PDFs + TXT)",
                                 data=zip_data,
-                                file_name=f"ocr_pdfs_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip",
+                                file_name=f"ocr_results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip",
                                 mime="application/zip",
                                 type="primary",
                                 use_container_width=True
@@ -469,6 +485,7 @@ def main():
                         st.info("""
                         **📦 Le fichier ZIP contient:**
                         - `pdfs/`: Dossier avec un PDF par image traitée
+                        - `txt/`: Dossier avec un fichier TXT par image traitée
                         - `ocr_summary.csv`: Résumé au format CSV
                         - `ocr_results.json`: Données complètes au format JSON
                         
@@ -476,30 +493,35 @@ def main():
                         - Le nom du fichier source en en-tête
                         - Le texte extrait de l'image formaté
                         - Pagination automatique si le texte est long
+                        
+                        **📝 Chaque fichier TXT contient:**
+                        - Header avec nom du fichier source et date
+                        - Le texte brut extrait de l'image
+                        - Format simple pour traitement automatique
                         """)
                         
-                        # Aperçu des PDFs
-                        with st.expander("👁️ Aperçu des PDFs générés"):
+                        # Aperçu des fichiers générés
+                        with st.expander("👁️ Aperçu des fichiers générés"):
                             success_results = [r for r in results if r['status'] == 'success']
                             
                             if success_results:
-                                st.write(f"**{len(success_results)} PDFs seront générés:**")
+                                st.write(f"**{len(success_results)} PDFs et {len(success_results)} TXT seront générés:**")
                                 
                                 for i, result in enumerate(success_results[:5]):  # Afficher max 5
                                     filename_stem = Path(result['filename']).stem
-                                    preview_text = result['text'][:200]
-                                    if len(result['text']) > 200:
+                                    preview_text = result['text'][:200] if result['text'] else "Aucun texte détecté"
+                                    if result['text'] and len(result['text']) > 200:
                                         preview_text += "..."
                                     
-                                    st.write(f"📄 **{filename_stem}.pdf**")
+                                    st.write(f"📄 **{filename_stem}.pdf** | 📝 **{filename_stem}.txt**")
                                     st.write(f"Source: {result['filename']}")
                                     st.write(f"Aperçu: _{preview_text}_")
                                     st.write("---")
                                 
                                 if len(success_results) > 5:
-                                    st.write(f"... et {len(success_results) - 5} autres PDFs")
+                                    st.write(f"... et {len(success_results) - 5} autres paires de fichiers (PDF + TXT)")
                             else:
-                                st.write("Aucun PDF à générer (aucune extraction réussie)")
+                                st.write("Aucun fichier à générer (aucune extraction réussie)")
         
         except Exception as e:
             st.error(f"Erreur lors de l'initialisation: {e}")
