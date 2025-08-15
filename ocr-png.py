@@ -44,6 +44,46 @@ class StreamlitOCRProcessor:
         }
         return mime_map.get(ext, 'image/jpeg')
     
+    def extract_clean_text(self, ocr_response) -> str:
+        """Extrait le texte propre de la réponse OCR Mistral"""
+        try:
+            # Si c'est une réponse avec structure pages/markdown
+            if isinstance(ocr_response, dict) and 'pages' in str(ocr_response):
+                # Extraire le markdown du premier élément pages
+                response_str = str(ocr_response)
+                
+                # Chercher le pattern markdown="..."
+                import re
+                markdown_match = re.search(r'markdown="([^"]*(?:\\.[^"]*)*)"', response_str)
+                if markdown_match:
+                    markdown_text = markdown_match.group(1)
+                    # Décoder les échappements
+                    clean_text = markdown_text.replace('\\n', '\n').replace('\\"', '"').replace('\\\\', '\\')
+                    return clean_text.strip()
+            
+            # Méthodes d'extraction classiques
+            if hasattr(ocr_response, 'text'):
+                return ocr_response.text.strip()
+            elif isinstance(ocr_response, dict):
+                if 'text' in ocr_response:
+                    return ocr_response['text'].strip()
+                elif 'choices' in ocr_response and len(ocr_response['choices']) > 0:
+                    choice = ocr_response['choices'][0]
+                    if isinstance(choice, dict):
+                        if 'message' in choice and 'content' in choice['message']:
+                            return choice['message']['content'].strip()
+                        elif 'text' in choice:
+                            return choice['text'].strip()
+                    return str(choice).strip()
+                elif 'content' in ocr_response:
+                    return ocr_response['content'].strip()
+            
+            return str(ocr_response).strip()
+            
+        except Exception as e:
+            st.warning(f"Erreur extraction texte: {e}")
+            return str(ocr_response)[:1000]  # Fallback avec limitation
+
     def process_single_image(self, client: Mistral, image_bytes: bytes, filename: str) -> Dict[str, Any]:
         """Traite une seule image avec OCR"""
         try:
@@ -56,53 +96,17 @@ class StreamlitOCRProcessor:
                     "type": "image_url",
                     "image_url": f"data:{mime_type};base64,{base64_image}"
                 },
-                include_image_base64=False  # Économise de la bande passante
+                include_image_base64=False
             )
             
-            # Extraction du texte avec debugging amélioré
-            extracted_text = ""
+            # Extraction propre du texte
+            extracted_text = self.extract_clean_text(ocr_response)
             
-            # Debug: afficher la structure de la réponse
-            st.write(f"🔍 Debug pour {filename}:")
-            st.write(f"Type de réponse: {type(ocr_response)}")
-            
-            if hasattr(ocr_response, 'text'):
-                extracted_text = ocr_response.text
-                st.write(f"✅ Texte trouvé via .text: {len(extracted_text)} caractères")
-            elif isinstance(ocr_response, dict):
-                st.write(f"📋 Clés disponibles: {list(ocr_response.keys())}")
-                
-                if 'text' in ocr_response:
-                    extracted_text = ocr_response['text']
-                    st.write(f"✅ Texte trouvé via ['text']: {len(extracted_text)} caractères")
-                elif 'choices' in ocr_response and len(ocr_response['choices']) > 0:
-                    choice = ocr_response['choices'][0]
-                    if isinstance(choice, dict):
-                        if 'message' in choice and 'content' in choice['message']:
-                            extracted_text = choice['message']['content']
-                            st.write(f"✅ Texte trouvé via choices[0].message.content: {len(extracted_text)} caractères")
-                        elif 'text' in choice:
-                            extracted_text = choice['text']
-                            st.write(f"✅ Texte trouvé via choices[0].text: {len(extracted_text)} caractères")
-                    else:
-                        extracted_text = str(choice)
-                        st.write(f"✅ Texte trouvé via choices[0] (string): {len(extracted_text)} caractères")
-                elif 'content' in ocr_response:
-                    extracted_text = ocr_response['content']
-                    st.write(f"✅ Texte trouvé via ['content']: {len(extracted_text)} caractères")
-                else:
-                    st.write("❌ Aucune structure de texte reconnue")
-                    st.write(f"Réponse complète: {ocr_response}")
-            else:
-                extracted_text = str(ocr_response)
-                st.write(f"⚠️ Conversion en string: {len(extracted_text)} caractères")
-            
-            # Nettoyer le texte extrait
-            if extracted_text:
-                extracted_text = extracted_text.strip()
-                
-            # Debug final
-            st.write(f"📝 Texte final: '{extracted_text[:100]}...' ({len(extracted_text)} chars)")
+            # Debug simplifié
+            st.write(f"✅ {filename}: {len(extracted_text)} caractères extraits")
+            if len(extracted_text) > 0:
+                preview = extracted_text[:100].replace('\n', ' ')
+                st.write(f"📝 Aperçu: {preview}...")
             
             return {
                 'filename': filename,
@@ -166,13 +170,13 @@ class StreamlitOCRProcessor:
             page_width = page.rect.width
             page_height = page.rect.height
             
-            # Titre avec le nom du fichier source - utiliser des polices intégrées
+            # Titre avec le nom du fichier source
             title = f"Texte extrait de: {filename}"
             page.insert_text(
                 (margin, margin + 20),
                 title,
                 fontsize=14,
-                fontname="Helvetica-Bold",  # Police standard PDF
+                fontname="Helvetica-Bold",
                 color=(0, 0, 0.8)
             )
             
@@ -185,43 +189,58 @@ class StreamlitOCRProcessor:
                 width=1
             )
             
-            # Préparer le texte (nettoyer et s'assurer qu'il n'est pas vide)
+            # Préparer le texte
             if not extracted_text or not extracted_text.strip():
                 extracted_text = "Aucun texte détecté dans cette image."
             
-            # Zone de texte pour le contenu
-            text_rect = fitz.Rect(margin, margin + 60, page_width - margin, page_height - margin)
+            # Diviser le texte en pages si nécessaire
+            # Calculer la hauteur disponible pour le texte
+            available_height = page_height - margin - 80  # 80 pour le titre et l'espace
+            chars_per_page = int(available_height / 15) * 80  # Approximation: 80 chars par ligne, 15px par ligne
             
-            # Insérer le texte avec gestion des débordements - police standard
-            result = page.insert_textbox(
-                text_rect,
-                extracted_text.strip(),
-                fontsize=11,
-                fontname="Helvetica",  # Police standard PDF
-                align=fitz.TEXT_ALIGN_LEFT,
-                color=(0, 0, 0)
-            )
+            text_chunks = []
+            remaining_text = extracted_text
             
-            # Si le texte dépasse, créer des pages supplémentaires
-            remaining_text = extracted_text[result:] if result < len(extracted_text) else ""
+            while remaining_text:
+                if len(remaining_text) <= chars_per_page:
+                    text_chunks.append(remaining_text)
+                    break
+                else:
+                    # Trouver un point de coupure logique (espace, retour à la ligne)
+                    cut_point = chars_per_page
+                    while cut_point > chars_per_page * 0.8 and remaining_text[cut_point] not in [' ', '\n', '.', ',']:
+                        cut_point -= 1
+                    
+                    if cut_point <= chars_per_page * 0.8:
+                        cut_point = chars_per_page
+                    
+                    text_chunks.append(remaining_text[:cut_point])
+                    remaining_text = remaining_text[cut_point:].lstrip()
             
-            while remaining_text.strip():
-                page = doc.new_page()
-                text_rect = fitz.Rect(margin, margin, page_width - margin, page_height - margin)
-                
-                result = page.insert_textbox(
+            # Insérer le premier chunk sur la première page
+            if text_chunks:
+                text_rect = fitz.Rect(margin, margin + 60, page_width - margin, page_height - margin)
+                page.insert_textbox(
                     text_rect,
-                    remaining_text.strip(),
+                    text_chunks[0],
                     fontsize=11,
-                    fontname="Helvetica",  # Police standard PDF
+                    fontname="Helvetica",
                     align=fitz.TEXT_ALIGN_LEFT,
                     color=(0, 0, 0)
                 )
                 
-                if result < len(remaining_text):
-                    remaining_text = remaining_text[result:]
-                else:
-                    break
+                # Créer des pages supplémentaires pour les autres chunks
+                for chunk in text_chunks[1:]:
+                    page = doc.new_page()
+                    text_rect = fitz.Rect(margin, margin, page_width - margin, page_height - margin)
+                    page.insert_textbox(
+                        text_rect,
+                        chunk,
+                        fontsize=11,
+                        fontname="Helvetica",
+                        align=fitz.TEXT_ALIGN_LEFT,
+                        color=(0, 0, 0)
+                    )
             
             # Sauvegarder le PDF en mémoire
             pdf_bytes = doc.tobytes()
@@ -252,34 +271,25 @@ class StreamlitOCRProcessor:
             for result in results:
                 if result['status'] == 'success':
                     filename_stem = Path(result['filename']).stem
-                    
-                    # Utiliser le texte tel quel, même si c'est une chaîne vide
                     original_text = result['text'] if result['text'] else ""
                     
-                    # Pour les fichiers : utiliser le texte original, pas de message par défaut
-                    text_for_files = original_text if original_text.strip() else "Aucun texte détecté dans cette image."
-                    
-                    # Créer le PDF
-                    pdf_data = self.create_pdf_from_text(result['filename'], text_for_files)
+                    # Créer le PDF avec le texte original ou message par défaut
+                    text_for_pdf = original_text if original_text.strip() else "Aucun texte détecté dans cette image."
+                    pdf_data = self.create_pdf_from_text(result['filename'], text_for_pdf)
                     if pdf_data:
                         zip_file.writestr(f'pdfs/{filename_stem}.pdf', pdf_data)
                         pdf_count += 1
                     else:
                         st.warning(f"Impossible de créer le PDF pour {result['filename']}")
                     
-                    # Créer le fichier TXT
+                    # Créer le fichier TXT avec SEULEMENT le texte propre
                     try:
-                        # Pour le TXT, afficher le texte original même si vide
-                        txt_content = f"Fichier source: {result['filename']}\n"
-                        txt_content += f"Date d'extraction: {result['timestamp']}\n"
-                        txt_content += f"Statut: {result['status']}\n"
-                        txt_content += f"Longueur du texte: {len(original_text)} caractères\n"
-                        txt_content += "-" * 50 + "\n\n"
-                        
                         if original_text.strip():
-                            txt_content += original_text
+                            # Seulement le texte extrait, rien d'autre
+                            txt_content = original_text.strip()
                         else:
-                            txt_content += "[Aucun texte détecté ou texte vide]"
+                            # Si vraiment aucun texte
+                            txt_content = "Aucun texte détecté dans cette image."
                         
                         zip_file.writestr(f'txt/{filename_stem}.txt', txt_content)
                         txt_count += 1
@@ -290,7 +300,7 @@ class StreamlitOCRProcessor:
             if pdf_count > 0 or txt_count > 0:
                 st.success(f"✅ {pdf_count} PDF(s) et {txt_count} TXT créé(s) avec succès!")
             
-            # Fichier JSON avec tous les détails
+            # Fichier JSON avec tous les détails (pour debug si nécessaire)
             zip_file.writestr('ocr_results.json', json.dumps(results, indent=2, ensure_ascii=False))
         
         zip_buffer.seek(0)
