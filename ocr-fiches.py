@@ -1,561 +1,270 @@
-import streamlit as st
+ import streamlit as st
 import base64
-import os
-import io
 from pathlib import Path
 from mistralai import Mistral
-import mimetypes
-from typing import List, Dict, Any, Optional
 import json
 from datetime import datetime
 import re
-from PIL import Image
 
-class TargetedOCRProcessor:
+class SimpleOCRExtractor:
     """
-    Processeur OCR spécialisé pour l'extraction d'informations personnelles
-    depuis des captures d'écran complexes
+    Extracteur OCR simple pour fiches de contact PRONOTE/Scolaire
     """
     
     def __init__(self):
         self.ocr_model = "mistral-ocr-latest"
-        self.supported_extensions = {'.png', '.jpg', '.jpeg', '.gif', '.bmp', '.tiff', '.webp'}
-        
-    def get_mistral_client(self, api_key: str) -> Mistral:
-        """Initialise le client Mistral avec la clé API"""
-        return Mistral(api_key=api_key)
     
-    def preprocess_image(self, image_bytes: bytes) -> bytes:
+    def process_image(self, api_key: str, image_bytes: bytes, filename: str) -> dict:
         """
-        Prétraite l'image pour améliorer l'OCR sur les captures d'écran
-        - Augmente le contraste
-        - Supprime le bruit
-        - Recadre si nécessaire
+        Traite une image et extrait les informations de contact
         """
         try:
-            from PIL import Image, ImageEnhance, ImageFilter
-            import io
+            # Client Mistral
+            client = Mistral(api_key=api_key)
             
-            # Charger l'image
-            img = Image.open(io.BytesIO(image_bytes))
+            # Encodage base64
+            base64_image = base64.b64encode(image_bytes).decode('utf-8')
             
-            # Convertir en RGB si nécessaire
-            if img.mode != 'RGB':
-                img = img.convert('RGB')
-            
-            # Améliorer le contraste
-            enhancer = ImageEnhance.Contrast(img)
-            img = enhancer.enhance(1.5)
-            
-            # Améliorer la netteté
-            enhancer = ImageEnhance.Sharpness(img)
-            img = enhancer.enhance(2.0)
-            
-            # Sauvegarder l'image traitée
-            output = io.BytesIO()
-            img.save(output, format='PNG', optimize=True)
-            return output.getvalue()
-            
-        except Exception as e:
-            st.warning(f"Prétraitement échoué, utilisation de l'image originale: {e}")
-            return image_bytes
-    
-    def encode_image(self, image_bytes: bytes) -> str:
-        """Encode une image en base64"""
-        return base64.b64encode(image_bytes).decode('utf-8')
-    
-    def get_image_mime_type(self, filename: str) -> str:
-        """Détermine le type MIME d'une image"""
-        mime_type, _ = mimetypes.guess_type(filename)
-        if mime_type and mime_type.startswith('image/'):
-            return mime_type
-        
-        ext = Path(filename).suffix.lower()
-        mime_map = {
-            '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
-            '.png': 'image/png', '.gif': 'image/gif',
-            '.bmp': 'image/bmp', '.tiff': 'image/tiff',
-            '.webp': 'image/webp'
-        }
-        return mime_map.get(ext, 'image/jpeg')
-    
-    def extract_personal_info(self, ocr_text: str) -> Dict[str, Any]:
-        """
-        Extrait les informations personnelles structurées du texte OCR
-        Adapté pour le format de fiche PRONOTE/système scolaire
-        """
-        info = {
-            'nom_complet': None,
-            'prenom': None,
-            'nom': None,
-            'profession': None,
-            'situation': None,
-            'adresse': None,
-            'code_postal': None,
-            'ville': None,
-            'telephone_fixe': None,
-            'telephone_mobile': None,
-            'email': None,
-            'autorisation_sms': False,
-            'autorisation_email': False,
-            'autorisation_courrier': False,
-            'legal': None,
-            'dates': {},
-            'identifiants': {},
-            'raw_text': ocr_text
-        }
-        
-        lines = ocr_text.split('\n')
-        
-        for i, line in enumerate(lines):
-            line_clean = line.strip()
-            
-            # Extraction du nom complet (format: Prénom NOM ou NOM Prénom)
-            if 'PLANTEGENET' in line_clean or 'Mme' in line_clean or 'M.' in line_clean:
-                # Nettoyer et extraire le nom
-                name_parts = re.sub(r'(Mme|M\.|Mlle)\s*', '', line_clean)
-                name_parts = re.sub(r'\([^)]*\)', '', name_parts).strip()
-                if name_parts:
-                    info['nom_complet'] = name_parts
-                    # Essayer de séparer prénom et nom
-                    parts = name_parts.split()
-                    if len(parts) >= 2:
-                        if parts[-1].isupper():
-                            info['nom'] = parts[-1]
-                            info['prenom'] = ' '.join(parts[:-1])
-                        else:
-                            info['prenom'] = parts[0]
-                            info['nom'] = ' '.join(parts[1:])
-            
-            # Profession
-            if 'Profession' in line_clean or 'Employé' in line_clean:
-                prof_match = re.search(r'(?:Profession\s*:?\s*|Employés?\s+)(.+)', line_clean, re.IGNORECASE)
-                if prof_match:
-                    info['profession'] = prof_match.group(1).strip()
-            
-            # Situation familiale
-            if 'Situation' in line_clean or 'CELIBATAIRE' in line_clean or 'MARIE' in line_clean:
-                sit_match = re.search(r'(?:Situation\s*:?\s*)?(CELIBATAIRE|MARIE|DIVORCE|VEUF|PACSE)', line_clean, re.IGNORECASE)
-                if sit_match:
-                    info['situation'] = sit_match.group(1)
-            
-            # Adresse
-            if 'Adresse' in line_clean or 'rue' in line_clean.lower():
-                addr_match = re.search(r'(?:Adresse\s*:?\s*)?(.+(?:rue|avenue|boulevard|place|impasse|chemin).+)', line_clean, re.IGNORECASE)
-                if addr_match:
-                    info['adresse'] = addr_match.group(1).strip()
-            
-            # Code postal et ville
-            cp_ville_match = re.search(r'(\d{5})\s+([A-Z\s\-]+)', line_clean)
-            if cp_ville_match:
-                info['code_postal'] = cp_ville_match.group(1)
-                info['ville'] = cp_ville_match.group(2).strip()
-            
-            # Téléphones
-            tel_matches = re.findall(r'(?:\+33\s*|0)[\d\s]{9,14}', line_clean)
-            for tel in tel_matches:
-                tel_clean = re.sub(r'\s+', '', tel)
-                if len(tel_clean) >= 10:
-                    if 'fixe' in line_clean.lower() or not info['telephone_fixe']:
-                        info['telephone_fixe'] = tel_clean
-                    elif 'mobile' in line_clean.lower() or '06' in tel_clean or '07' in tel_clean:
-                        info['telephone_mobile'] = tel_clean
-            
-            # Email
-            email_match = re.search(r'[\w\.-]+@[\w\.-]+\.\w+', line_clean)
-            if email_match:
-                info['email'] = email_match.group(0)
-            
-            # Autorisations
-            if 'SMS autorisé' in line_clean:
-                info['autorisation_sms'] = True
-            if 'Email interdit' in line_clean:
-                info['autorisation_email'] = False
-            elif 'Email autorisé' in line_clean:
-                info['autorisation_email'] = True
-            if 'Courrier autorisé' in line_clean:
-                info['autorisation_courrier'] = True
-            
-            # Statut légal
-            if 'LEGAL' in line_clean:
-                info['legal'] = 'LEGAL'
-            
-            # Dates (format JJ/MM/AAAA)
-            date_matches = re.findall(r'\d{2}/\d{2}/\d{4}', line_clean)
-            for date in date_matches:
-                if i < len(lines) - 1:
-                    context = lines[i-1] if i > 0 else ""
-                    info['dates'][context[:30]] = date
-        
-        return info
-    
-    def process_single_image(self, client: Mistral, image_bytes: bytes, filename: str, preprocess: bool = True) -> Dict[str, Any]:
-        """Traite une seule image avec OCR et extraction d'informations"""
-        try:
-            # Prétraitement optionnel
-            if preprocess:
-                image_bytes = self.preprocess_image(image_bytes)
-            
-            # Encodage et préparation
-            base64_image = self.encode_image(image_bytes)
-            mime_type = self.get_image_mime_type(filename)
-            
-            # Appel OCR avec prompt spécialisé pour l'extraction
+            # Appel OCR
             ocr_response = client.ocr.process(
                 model=self.ocr_model,
                 document={
                     "type": "image_url",
-                    "image_url": f"data:{mime_type};base64,{base64_image}"
+                    "image_url": f"data:image/png;base64,{base64_image}"
                 },
                 include_image_base64=False
             )
             
-            # Extraction du texte brut
-            extracted_text = self.extract_clean_text(ocr_response)
-            
-            # Extraction structurée des informations personnelles
-            structured_info = self.extract_personal_info(extracted_text)
-            
-            return {
-                'filename': filename,
-                'status': 'success',
-                'raw_text': extracted_text,
-                'structured_data': structured_info,
-                'error': None,
-                'timestamp': datetime.now().isoformat()
-            }
-            
-        except Exception as e:
-            st.error(f"❌ Erreur OCR pour {filename}: {e}")
-            return {
-                'filename': filename,
-                'status': 'error',
-                'raw_text': '',
-                'structured_data': {},
-                'error': str(e),
-                'timestamp': datetime.now().isoformat()
-            }
-    
-    def extract_clean_text(self, ocr_response) -> str:
-        """Extrait le texte propre de la réponse OCR"""
-        try:
+            # Extraction du texte
+            text = ""
             if hasattr(ocr_response, 'pages') and ocr_response.pages:
-                page = ocr_response.pages[0]
-                if hasattr(page, 'markdown'):
-                    return page.markdown.strip()
+                text = ocr_response.pages[0].markdown.strip()
             
-            # Fallback: conversion string et extraction
-            response_str = str(ocr_response)
-            import re
-            
-            pattern = r'markdown="(.*?)"(?=,\s*images=)'
-            match = re.search(pattern, response_str, re.DOTALL)
-            
-            if match:
-                markdown_content = match.group(1)
-                clean_text = (markdown_content
-                             .replace('\\n', '\n')
-                             .replace('\\t', '\t')
-                             .replace('\\"', '"')
-                             .replace('\\\\', '\\'))
-                return clean_text.strip()
-            
-            return "[Extraction échouée]"
+            # Parse des informations
+            return self.parse_contact_info(text, filename)
             
         except Exception as e:
-            return f"[Erreur: {str(e)}]"
+            return {
+                'status': 'error',
+                'filename': filename,
+                'error': str(e)
+            }
     
-    def export_to_json(self, results: List[Dict]) -> str:
-        """Exporte les résultats en JSON structuré"""
-        export_data = {
-            'extraction_date': datetime.now().isoformat(),
-            'total_files': len(results),
-            'successful': sum(1 for r in results if r['status'] == 'success'),
-            'results': []
+    def parse_contact_info(self, text: str, filename: str) -> dict:
+        """
+        Parse le texte OCR pour extraire les informations structurées
+        """
+        info = {
+            'status': 'success',
+            'filename': filename,
+            'etablissement': None,
+            'eleve_nom': None,
+            'classe': None,
+            'responsable': {
+                'nom': None,
+                'relation': None,
+                'statut': None,
+                'profession': None,
+                'situation': None,
+                'adresse': None,
+                'code_postal': None,
+                'ville': None,
+                'telephone_fixe': None,
+                'telephone_mobile': None
+            },
+            'autorisations': {
+                'sms': False,
+                'email': False,
+                'courrier': False,
+                'discussion': False
+            },
+            'texte_brut': text
         }
         
-        for result in results:
-            if result['status'] == 'success':
-                export_data['results'].append({
-                    'filename': result['filename'],
-                    'data': result['structured_data']
-                })
+        lines = text.split('\n')
         
-        return json.dumps(export_data, indent=2, ensure_ascii=False)
-    
-    def export_to_txt(self, results: List[Dict]) -> str:
-        """Exporte les résultats en format texte lisible"""
-        output = []
-        output.append("=" * 80)
-        output.append(f"EXTRACTION OCR - {datetime.now().strftime('%d/%m/%Y %H:%M')}")
-        output.append("=" * 80)
-        
-        for result in results:
-            if result['status'] == 'success':
-                data = result['structured_data']
-                output.append(f"\n📄 Fichier: {result['filename']}")
-                output.append("-" * 40)
+        for i, line in enumerate(lines):
+            line = line.strip()
+            
+            # Établissement (souvent en haut avec COLLÈGE, LYCÉE, etc.)
+            if 'COLLÈGE' in line or 'LYCÉE' in line or 'ÉCOLE' in line:
+                info['etablissement'] = line.strip()
+            
+            # Nom de l'élève (souvent en gros ou après l'établissement)
+            if 'COLOMBO' in line or 'PLANTEGENET' in line:
+                # Chercher le nom complet de l'élève (pas le responsable)
+                if 'Mme' not in line and 'M.' not in line and '(' not in line:
+                    info['eleve_nom'] = line.strip()
+            
+            # Classe (format 3E1, 6A, etc.)
+            classe_match = re.search(r'\b\d[A-Z]\d?\b', line)
+            if classe_match:
+                info['classe'] = classe_match.group(0)
+            
+            # Responsable (format: Mme/M. NOM Prénom (RELATION))
+            if ('Mme' in line or 'M.' in line) and 'PLANTEGENET' in line:
+                # Extraire nom complet
+                nom_match = re.search(r'(Mme|M\.)\s+([^(]+)', line)
+                if nom_match:
+                    info['responsable']['nom'] = nom_match.group(2).strip()
                 
-                if data.get('nom_complet'):
-                    output.append(f"👤 Nom complet: {data['nom_complet']}")
-                if data.get('profession'):
-                    output.append(f"💼 Profession: {data['profession']}")
-                if data.get('situation'):
-                    output.append(f"👫 Situation: {data['situation']}")
-                if data.get('adresse'):
-                    output.append(f"📍 Adresse: {data['adresse']}")
-                    if data.get('code_postal') and data.get('ville'):
-                        output.append(f"   {data['code_postal']} {data['ville']}")
-                if data.get('telephone_fixe'):
-                    output.append(f"☎️  Fixe: {data['telephone_fixe']}")
-                if data.get('telephone_mobile'):
-                    output.append(f"📱 Mobile: {data['telephone_mobile']}")
-                if data.get('email'):
-                    output.append(f"✉️  Email: {data['email']}")
+                # Extraire relation (MÈRE, PÈRE, etc.)
+                relation_match = re.search(r'\(([^)]+)\)', line)
+                if relation_match:
+                    info['responsable']['relation'] = relation_match.group(1)
+            
+            # Statut légal
+            if 'LÉGAL' in line or 'LEGAL' in line:
+                info['responsable']['statut'] = 'LÉGAL'
+            
+            # Profession
+            if 'Profession' in line or 'Employé' in line:
+                # Prendre le reste de la ligne ou la ligne suivante
+                if ':' in line:
+                    info['responsable']['profession'] = line.split(':', 1)[1].strip()
+                elif i < len(lines) - 1 and 'Profession' in line:
+                    info['responsable']['profession'] = lines[i + 1].strip()
+            
+            # Situation familiale
+            if 'CÉLIBATAIRE' in line or 'MARIÉ' in line or 'DIVORCÉ' in line:
+                for situation in ['CÉLIBATAIRE', 'MARIÉ', 'DIVORCÉ', 'VEUF', 'PACSÉ']:
+                    if situation in line:
+                        info['responsable']['situation'] = situation
+                        break
+            
+            # Adresse
+            if 'rue' in line.lower() or 'avenue' in line.lower() or 'boulevard' in line.lower():
+                # Extraire l'adresse
+                addr_match = re.search(r'\d+\s+.*(rue|avenue|boulevard|place|chemin).*', line, re.IGNORECASE)
+                if addr_match:
+                    info['responsable']['adresse'] = addr_match.group(0).strip()
+            
+            # Code postal et ville
+            cp_ville_match = re.search(r'(\d{5})\s+([A-Z][A-Z\s\-]+)', line)
+            if cp_ville_match:
+                info['responsable']['code_postal'] = cp_ville_match.group(1)
+                ville = cp_ville_match.group(2).strip()
+                # Retirer "FRANCE" si présent
+                ville = ville.replace('- FRANCE', '').replace('FRANCE', '').strip()
+                info['responsable']['ville'] = ville
+            
+            # Téléphones
+            tel_matches = re.findall(r'(?:\+33\s*|0)[\d\s]{9,14}', line)
+            for tel in tel_matches:
+                tel_clean = re.sub(r'[\s\(\)\+]', '', tel)
+                if tel_clean.startswith('33'):
+                    tel_clean = '0' + tel_clean[2:]
                 
-                output.append("")
+                # Déterminer si fixe ou mobile
+                if tel_clean.startswith('06') or tel_clean.startswith('07'):
+                    info['responsable']['telephone_mobile'] = tel_clean
+                else:
+                    info['responsable']['telephone_fixe'] = tel_clean
+            
+            # Autorisations
+            if 'SMS autorisé' in line:
+                info['autorisations']['sms'] = True
+            if 'Email autorisé' in line:
+                info['autorisations']['email'] = True
+            elif 'Email interdit' in line:
+                info['autorisations']['email'] = False
+            if 'Courrier autorisé' in line:
+                info['autorisations']['courrier'] = True
+            if 'Discussion autorisé' in line:
+                info['autorisations']['discussion'] = True
         
-        return "\n".join(output)
+        return info
 
 def main():
     st.set_page_config(
-        page_title="OCR Ciblé - Extraction d'informations",
-        page_icon="🎯",
+        page_title="Extracteur Fiche Contact",
+        page_icon="📇",
         layout="wide"
     )
     
-    st.title("🎯 OCR Intelligent - Extraction d'Informations Personnelles")
-    st.markdown("**Extraction automatique depuis captures d'écran complexes**")
+    st.title("📇 Extracteur de Fiches Contact Scolaires")
+    st.markdown("**Extraction simple et rapide des informations de contact**")
     
-    processor = TargetedOCRProcessor()
-    
-    # Configuration
+    # Sidebar
     with st.sidebar:
         st.header("⚙️ Configuration")
-        
         api_key = st.text_input(
             "Clé API Mistral",
             type="password",
-            help="Votre clé API Mistral AI"
+            help="Entrez votre clé API Mistral"
         )
         
         st.divider()
         
-        st.subheader("🔧 Options d'extraction")
-        
-        preprocess = st.checkbox(
-            "Prétraitement d'image",
-            value=True,
-            help="Améliore le contraste et la netteté pour les captures d'écran"
+        format_export = st.radio(
+            "Format d'export",
+            ["Texte simple", "JSON", "Les deux"],
+            index=2
         )
-        
-        extract_mode = st.radio(
-            "Mode d'extraction",
-            ["Structuré (recommandé)", "Texte brut uniquement"],
-            help="Le mode structuré extrait automatiquement les champs"
-        )
-        
-        if not api_key:
-            st.warning("⚠️ Clé API requise")
-            st.info("[Obtenir une clé](https://console.mistral.ai)")
     
-    if api_key:
-        try:
-            client = processor.get_mistral_client(api_key)
+    if not api_key:
+        st.warning("⚠️ Veuillez entrer votre clé API Mistral dans la barre latérale")
+        st.stop()
+    
+    # Upload
+    uploaded_files = st.file_uploader(
+        "Chargez vos captures d'écran",
+        type=['png', 'jpg', 'jpeg'],
+        accept_multiple_files=True
+    )
+    
+    if uploaded_files:
+        st.info(f"📁 {len(uploaded_files)} fichier(s) chargé(s)")
+        
+        if st.button("🚀 Extraire les informations", type="primary"):
+            extractor = SimpleOCRExtractor()
+            results = []
             
-            # Upload
-            st.header("📁 Chargement des Images")
+            progress = st.progress(0)
             
-            uploaded_files = st.file_uploader(
-                "Sélectionnez vos captures d'écran",
-                type=['png', 'jpg', 'jpeg', 'gif', 'bmp', 'tiff', 'webp'],
-                accept_multiple_files=True,
-                help="Formats supportés: PNG, JPG, JPEG, GIF, BMP, TIFF, WEBP"
-            )
-            
-            if uploaded_files:
-                st.success(f"✅ {len(uploaded_files)} fichier(s) chargé(s)")
+            for idx, file in enumerate(uploaded_files):
+                progress.progress((idx + 1) / len(uploaded_files))
                 
-                # Aperçu
-                with st.expander("👁️ Aperçu des images"):
-                    cols = st.columns(min(len(uploaded_files), 3))
-                    for i, file in enumerate(uploaded_files[:3]):
-                        with cols[i]:
-                            st.image(file, caption=file.name, use_column_width=True)
-                
-                # Bouton de traitement
-                if st.button("🚀 Lancer l'extraction", type="primary", use_container_width=True):
-                    
-                    # Progression
-                    progress_bar = st.progress(0)
-                    status_text = st.empty()
-                    
-                    results = []
-                    
-                    # Traitement
-                    for i, uploaded_file in enumerate(uploaded_files):
-                        progress = (i + 1) / len(uploaded_files)
-                        progress_bar.progress(progress)
-                        status_text.text(f"Traitement: {uploaded_file.name} ({i+1}/{len(uploaded_files)})")
-                        
-                        image_bytes = uploaded_file.read()
-                        result = processor.process_single_image(
-                            client, 
-                            image_bytes, 
-                            uploaded_file.name,
-                            preprocess=preprocess
-                        )
-                        results.append(result)
-                        uploaded_file.seek(0)
-                    
-                    progress_bar.progress(1.0)
-                    status_text.text("✅ Extraction terminée!")
-                    
-                    # Résultats
-                    st.header("📊 Résultats de l'Extraction")
-                    
-                    # Statistiques
-                    success_count = sum(1 for r in results if r['status'] == 'success')
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        st.metric("✅ Réussis", success_count)
-                    with col2:
-                        st.metric("❌ Échecs", len(results) - success_count)
-                    
-                    # Affichage des données extraites
-                    if extract_mode == "Structuré (recommandé)":
-                        st.subheader("📋 Informations Extraites")
-                        
-                        for result in results:
-                            if result['status'] == 'success':
-                                with st.expander(f"👤 {result['filename']}", expanded=True):
-                                    data = result['structured_data']
-                                    
-                                    col1, col2 = st.columns(2)
-                                    
-                                    with col1:
-                                        st.markdown("**🏷️ Identité**")
-                                        if data.get('nom_complet'):
-                                            st.write(f"Nom: **{data['nom_complet']}**")
-                                        if data.get('profession'):
-                                            st.write(f"Profession: {data['profession']}")
-                                        if data.get('situation'):
-                                            st.write(f"Situation: {data['situation']}")
-                                    
-                                    with col2:
-                                        st.markdown("**📞 Contact**")
-                                        if data.get('telephone_fixe'):
-                                            st.write(f"Fixe: {data['telephone_fixe']}")
-                                        if data.get('telephone_mobile'):
-                                            st.write(f"Mobile: {data['telephone_mobile']}")
-                                        if data.get('email'):
-                                            st.write(f"Email: {data['email']}")
-                                    
-                                    if data.get('adresse'):
-                                        st.markdown("**📍 Adresse**")
-                                        st.write(data['adresse'])
-                                        if data.get('code_postal') and data.get('ville'):
-                                            st.write(f"{data['code_postal']} {data['ville']}")
-                                    
-                                    # Texte brut en accordéon
-                                    with st.expander("📝 Texte brut OCR"):
-                                        st.text_area(
-                                            "Texte extrait",
-                                            value=result['raw_text'],
-                                            height=200,
-                                            key=f"raw_{result['filename']}"
-                                        )
-                    else:
-                        # Mode texte brut
-                        for result in results:
-                            if result['status'] == 'success':
-                                with st.expander(f"📄 {result['filename']}"):
-                                    st.text_area(
-                                        "Texte extrait",
-                                        value=result['raw_text'],
-                                        height=300,
-                                        key=f"text_{result['filename']}"
-                                    )
-                    
-                    # Export
-                    if success_count > 0:
-                        st.header("💾 Export des Données")
-                        
-                        col1, col2, col3 = st.columns(3)
+                # Traitement
+                image_bytes = file.read()
+                result = extractor.process_image(api_key, image_bytes, file.name)
+                results.append(result)
+                file.seek(0)
+            
+            st.success("✅ Extraction terminée!")
+            
+            # Affichage des résultats
+            st.header("📊 Résultats")
+            
+            for result in results:
+                if result['status'] == 'success':
+                    with st.expander(f"📄 {result['filename']}", expanded=True):
+                        col1, col2 = st.columns(2)
                         
                         with col1:
-                            json_data = processor.export_to_json(results)
-                            st.download_button(
-                                label="📋 JSON Structuré",
-                                data=json_data,
-                                file_name=f"extraction_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
-                                mime="application/json",
-                                use_container_width=True
-                            )
+                            st.markdown("**🏫 Informations élève**")
+                            if result['etablissement']:
+                                st.write(f"Établissement: {result['etablissement']}")
+                            if result['eleve_nom']:
+                                st.write(f"Élève: **{result['eleve_nom']}**")
+                            if result['classe']:
+                                st.write(f"Classe: {result['classe']}")
+                            
+                            st.markdown("**👤 Responsable**")
+                            resp = result['responsable']
+                            if resp['nom']:
+                                st.write(f"Nom: **{resp['nom']}**")
+                            if resp['relation']:
+                                st.write(f"Relation: {resp['relation']}")
+                            if resp['statut']:
+                                st.write(f"Statut: {resp['statut']}")
+                            if resp['profession']:
+                                st.write(f"Profession: {resp['profession'][:50]}...")
+                            if resp['situation']:
+                                st.write(f"Situation: {resp['situation']}")
                         
                         with col2:
-                            txt_data = processor.export_to_txt(results)
-                            st.download_button(
-                                label="📝 Texte Formaté",
-                                data=txt_data,
-                                file_name=f"extraction_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt",
-                                mime="text/plain",
-                                use_container_width=True
-                            )
-                        
-                        with col3:
-                            # Export CSV pour tableur
-                            import pandas as pd
-                            
-                            rows = []
-                            for r in results:
-                                if r['status'] == 'success':
-                                    d = r['structured_data']
-                                    rows.append({
-                                        'Fichier': r['filename'],
-                                        'Nom': d.get('nom_complet', ''),
-                                        'Profession': d.get('profession', ''),
-                                        'Téléphone': d.get('telephone_mobile', d.get('telephone_fixe', '')),
-                                        'Email': d.get('email', ''),
-                                        'Adresse': f"{d.get('adresse', '')} {d.get('code_postal', '')} {d.get('ville', '')}".strip()
-                                    })
-                            
-                            if rows:
-                                df = pd.DataFrame(rows)
-                                csv = df.to_csv(index=False)
-                                st.download_button(
-                                    label="📊 Export CSV",
-                                    data=csv,
-                                    file_name=f"extraction_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-                                    mime="text/csv",
-                                    use_container_width=True
-                                )
-        
-        except Exception as e:
-            st.error(f"❌ Erreur: {e}")
-    
-    # Info
-    with st.expander("ℹ️ À propos"):
-        st.markdown("""
-        ### 🎯 Fonctionnalités
-        - **Extraction ciblée** des informations personnelles
-        - **Prétraitement** automatique pour améliorer la qualité OCR
-        - **Structuration** intelligente des données extraites
-        - **Export** multi-format (JSON, TXT, CSV)
-        
-        ### 📋 Champs extraits
-        - Nom complet, prénom, nom
-        - Profession et situation familiale
-        - Adresse complète
-        - Téléphones (fixe et mobile)
-        - Email
-        - Autorisations de contact
-        
-        ### 🔧 Optimisations
-        - Amélioration du contraste pour captures d'écran
-        - Reconnaissance de patterns spécifiques
-        - Validation des formats (téléphone, email, etc.)
-        """)
-
-if __name__ == "__main__":
-    main()
+                            st.markdown("**📍 Coordonnées**")
+                            if resp['adresse']:
+                                st.write(f"Adresse: {resp['adresse']}")
+                            if resp['code_
