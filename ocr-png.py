@@ -86,6 +86,36 @@ class StreamlitOCRProcessor:
                 'timestamp': datetime.now().isoformat()
             }
     
+    def create_simple_pdf_fallback(self, filename: str, extracted_text: str) -> bytes:
+        """Version de fallback pour créer un PDF simple sans polices spéciales"""
+        try:
+            doc = fitz.open()
+            page = doc.new_page()
+            
+            # Texte simple sans spécification de police
+            content = f"Fichier: {filename}\n\n{extracted_text if extracted_text else 'Aucun texte detecte'}"
+            
+            # Découper le texte en lignes pour éviter les débordements
+            lines = content.split('\n')
+            y_position = 50
+            
+            for line in lines:
+                if y_position > 750:  # Nouvelle page si nécessaire
+                    page = doc.new_page()
+                    y_position = 50
+                
+                # Insérer ligne par ligne sans fontname
+                page.insert_text((50, y_position), line[:80], fontsize=11)  # Limiter à 80 chars
+                y_position += 15
+            
+            pdf_bytes = doc.tobytes()
+            doc.close()
+            return pdf_bytes
+            
+        except Exception as e:
+            st.error(f"Erreur fallback PDF: {e}")
+            return None
+    
     def create_pdf_from_text(self, filename: str, extracted_text: str) -> bytes:
         """Crée un PDF contenant le texte extrait d'une image"""
         try:
@@ -100,13 +130,13 @@ class StreamlitOCRProcessor:
             page_width = page.rect.width
             page_height = page.rect.height
             
-            # Titre avec le nom du fichier source
+            # Titre avec le nom du fichier source - utiliser des polices intégrées
             title = f"Texte extrait de: {filename}"
             page.insert_text(
                 (margin, margin + 20),
                 title,
                 fontsize=14,
-                fontname="helv-bold",
+                fontname="Helvetica-Bold",  # Police standard PDF
                 color=(0, 0, 0.8)
             )
             
@@ -126,12 +156,12 @@ class StreamlitOCRProcessor:
             # Zone de texte pour le contenu
             text_rect = fitz.Rect(margin, margin + 60, page_width - margin, page_height - margin)
             
-            # Insérer le texte avec gestion des débordements
+            # Insérer le texte avec gestion des débordements - police standard
             result = page.insert_textbox(
                 text_rect,
                 extracted_text.strip(),
                 fontsize=11,
-                fontname="helv",
+                fontname="Helvetica",  # Police standard PDF
                 align=fitz.TEXT_ALIGN_LEFT,
                 color=(0, 0, 0)
             )
@@ -147,7 +177,7 @@ class StreamlitOCRProcessor:
                     text_rect,
                     remaining_text.strip(),
                     fontsize=11,
-                    fontname="helv",
+                    fontname="Helvetica",  # Police standard PDF
                     align=fitz.TEXT_ALIGN_LEFT,
                     color=(0, 0, 0)
                 )
@@ -164,22 +194,9 @@ class StreamlitOCRProcessor:
             return pdf_bytes
             
         except Exception as e:
-            st.error(f"Erreur lors de la création du PDF pour {filename}: {e}")
-            # Créer un PDF minimal en cas d'erreur
-            try:
-                doc = fitz.open()
-                page = doc.new_page()
-                page.insert_text(
-                    (50, 100),
-                    f"Erreur lors de la création du PDF pour: {filename}\nErreur: {str(e)}",
-                    fontsize=12,
-                    color=(1, 0, 0)
-                )
-                pdf_bytes = doc.tobytes()
-                doc.close()
-                return pdf_bytes
-            except:
-                return None
+            st.warning(f"Erreur police standard pour {filename}: {e}. Utilisation du mode fallback...")
+            # Essayer la version de fallback
+            return self.create_simple_pdf_fallback(filename, extracted_text)
     
     def create_results_zip(self, results: List[Dict[str, Any]]) -> bytes:
         """Crée un fichier ZIP avec les PDFs générés"""
