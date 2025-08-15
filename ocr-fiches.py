@@ -267,4 +267,95 @@ def main():
                             st.markdown("**📍 Coordonnées**")
                             if resp['adresse']:
                                 st.write(f"Adresse: {resp['adresse']}")
-                            if resp['code_
+                            if resp['code_postal'] and resp['ville']:
+                                st.write(f"{resp['code_postal']} {resp['ville']}")
+                            if resp['telephone_fixe']:
+                                st.write(f"Tél. fixe: {resp['telephone_fixe']}")
+                            if resp['telephone_mobile']:
+                                st.write(f"Tél. mobile: {resp['telephone_mobile']}")
+                            
+                            st.markdown("**✅ Autorisations**")
+                            auth = result['autorisations']
+                            st.write(f"SMS: {'✅' if auth['sms'] else '❌'}")
+                            st.write(f"Email: {'✅' if auth['email'] else '❌'}")
+                            st.write(f"Courrier: {'✅' if auth['courrier'] else '❌'}")
+                            st.write(f"Discussion: {'✅' if auth['discussion'] else '❌'}")
+                
+                else:
+                    st.error(f"❌ Erreur pour {result['filename']}: {result.get('error', 'Inconnue')}")
+            
+            # Export
+            st.header("💾 Export")
+            
+            # Préparer les exports
+            if format_export in ["Texte simple", "Les deux"]:
+                txt_export = []
+                for r in results:
+                    if r['status'] == 'success':
+                        txt_export.append(f"{'='*60}")
+                        txt_export.append(f"FICHIER: {r['filename']}")
+                        txt_export.append(f"{'='*60}")
+                        if r['etablissement']:
+                            txt_export.append(f"ÉTABLISSEMENT: {r['etablissement']}")
+                        if r['eleve_nom']:
+                            txt_export.append(f"ÉLÈVE: {r['eleve_nom']}")
+                        if r['classe']:
+                            txt_export.append(f"CLASSE: {r['classe']}")
+                        
+                        txt_export.append(f"\nRESPONSABLE LÉGAL:")
+                        resp = r['responsable']
+                        if resp['nom']:
+                            txt_export.append(f"  Nom: {resp['nom']}")
+                        if resp['relation']:
+                            txt_export.append(f"  Relation: {resp['relation']}")
+                        if resp['statut']:
+                            txt_export.append(f"  Statut: {resp['statut']}")
+                        if resp['profession']:
+                            txt_export.append(f"  Profession: {resp['profession']}")
+                        if resp['situation']:
+                            txt_export.append(f"  Situation: {resp['situation']}")
+                        if resp['adresse']:
+                            txt_export.append(f"  Adresse: {resp['adresse']}")
+                        if resp['code_postal'] and resp['ville']:
+                            txt_export.append(f"  {resp['code_postal']} {resp['ville']}")
+                        if resp['telephone_fixe']:
+                            txt_export.append(f"  Tél. fixe: {resp['telephone_fixe']}")
+                        if resp['telephone_mobile']:
+                            txt_export.append(f"  Tél. mobile: {resp['telephone_mobile']}")
+                        
+                        txt_export.append(f"\nAUTORISATIONS:")
+                        auth = r['autorisations']
+                        txt_export.append(f"  SMS: {'OUI' if auth['sms'] else 'NON'}")
+                        txt_export.append(f"  Email: {'OUI' if auth['email'] else 'NON'}")
+                        txt_export.append(f"  Courrier: {'OUI' if auth['courrier'] else 'NON'}")
+                        txt_export.append(f"  Discussion: {'OUI' if auth['discussion'] else 'NON'}")
+                        txt_export.append("\n")
+                
+                txt_content = "\n".join(txt_export)
+                
+                st.download_button(
+                    label="📝 Télécharger TXT",
+                    data=txt_content,
+                    file_name=f"fiches_contact_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt",
+                    mime="text/plain"
+                )
+            
+            if format_export in ["JSON", "Les deux"]:
+                # Nettoyer pour JSON (retirer texte_brut pour alléger)
+                json_results = []
+                for r in results:
+                    if r['status'] == 'success':
+                        clean_result = {k: v for k, v in r.items() if k != 'texte_brut'}
+                        json_results.append(clean_result)
+                
+                json_content = json.dumps(json_results, indent=2, ensure_ascii=False)
+                
+                st.download_button(
+                    label="📋 Télécharger JSON",
+                    data=json_content,
+                    file_name=f"fiches_contact_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
+                    mime="application/json"
+                )
+
+if __name__ == "__main__":
+    main()
