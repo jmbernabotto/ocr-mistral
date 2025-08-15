@@ -95,11 +95,10 @@ class StreamlitOCRProcessor:
             # Ajouter une page
             page = doc.new_page()
             
-            # Définir les marges et la zone de texte
+            # Définir les marges
             margin = 50
             page_width = page.rect.width
             page_height = page.rect.height
-            text_rect = fitz.Rect(margin, margin, page_width - margin, page_height - margin)
             
             # Titre avec le nom du fichier source
             title = f"Texte extrait de: {filename}"
@@ -120,46 +119,43 @@ class StreamlitOCRProcessor:
                 width=1
             )
             
-            # Insérer le texte extrait
-            text_start_y = margin + 60
-            remaining_text = extracted_text
-            current_y = text_start_y
+            # Préparer le texte (nettoyer et s'assurer qu'il n'est pas vide)
+            if not extracted_text or not extracted_text.strip():
+                extracted_text = "Aucun texte détecté dans cette image."
             
-            while remaining_text and current_y < page_height - margin:
-                # Calculer combien de texte peut tenir sur cette page
-                available_height = page_height - current_y - margin
-                text_rect_current = fitz.Rect(margin, current_y, page_width - margin, current_y + available_height)
+            # Zone de texte pour le contenu
+            text_rect = fitz.Rect(margin, margin + 60, page_width - margin, page_height - margin)
+            
+            # Insérer le texte avec gestion des débordements
+            result = page.insert_textbox(
+                text_rect,
+                extracted_text.strip(),
+                fontsize=11,
+                fontname="helv",
+                align=fitz.TEXT_ALIGN_LEFT,
+                color=(0, 0, 0)
+            )
+            
+            # Si le texte dépasse, créer des pages supplémentaires
+            remaining_text = extracted_text[result:] if result < len(extracted_text) else ""
+            
+            while remaining_text.strip():
+                page = doc.new_page()
+                text_rect = fitz.Rect(margin, margin, page_width - margin, page_height - margin)
                 
-                # Insérer le texte avec retour à la ligne automatique
-                text_inserted = page.insert_textbox(
-                    text_rect_current,
-                    remaining_text,
+                result = page.insert_textbox(
+                    text_rect,
+                    remaining_text.strip(),
                     fontsize=11,
                     fontname="helv",
                     align=fitz.TEXT_ALIGN_LEFT,
                     color=(0, 0, 0)
                 )
                 
-                # Si tout le texte n'a pas pu être inséré, créer une nouvelle page
-                if text_inserted < len(remaining_text):
-                    # Trouver où le texte a été coupé
-                    words = remaining_text.split()
-                    words_inserted = 0
-                    char_count = 0
-                    
-                    for word in words:
-                        if char_count + len(word) + 1 > text_inserted:
-                            break
-                        char_count += len(word) + 1
-                        words_inserted += 1
-                    
-                    remaining_text = ' '.join(words[words_inserted:])
-                    
-                    # Nouvelle page
-                    page = doc.new_page()
-                    current_y = margin
+                if result < len(remaining_text):
+                    remaining_text = remaining_text[result:]
                 else:
-                    remaining_text = ""
+                    break
             
             # Sauvegarder le PDF en mémoire
             pdf_bytes = doc.tobytes()
@@ -168,8 +164,22 @@ class StreamlitOCRProcessor:
             return pdf_bytes
             
         except Exception as e:
-            print(f"Erreur lors de la création du PDF pour {filename}: {e}")
-            return None
+            st.error(f"Erreur lors de la création du PDF pour {filename}: {e}")
+            # Créer un PDF minimal en cas d'erreur
+            try:
+                doc = fitz.open()
+                page = doc.new_page()
+                page.insert_text(
+                    (50, 100),
+                    f"Erreur lors de la création du PDF pour: {filename}\nErreur: {str(e)}",
+                    fontsize=12,
+                    color=(1, 0, 0)
+                )
+                pdf_bytes = doc.tobytes()
+                doc.close()
+                return pdf_bytes
+            except:
+                return None
     
     def create_results_zip(self, results: List[Dict[str, Any]]) -> bytes:
         """Crée un fichier ZIP avec les PDFs générés"""
@@ -183,13 +193,24 @@ class StreamlitOCRProcessor:
             zip_file.writestr('ocr_summary.csv', csv_buffer.getvalue())
             
             # Créer un PDF pour chaque image traitée avec succès
+            pdf_count = 0
             for result in results:
-                if result['status'] == 'success' and result['text'].strip():
+                if result['status'] == 'success':
                     filename_stem = Path(result['filename']).stem
-                    pdf_data = self.create_pdf_from_text(result['filename'], result['text'])
+                    
+                    # Créer le PDF même si le texte est vide
+                    text_to_use = result['text'] if result['text'].strip() else "Aucun texte détecté dans cette image."
+                    pdf_data = self.create_pdf_from_text(result['filename'], text_to_use)
                     
                     if pdf_data:
                         zip_file.writestr(f'pdfs/{filename_stem}.pdf', pdf_data)
+                        pdf_count += 1
+                    else:
+                        st.warning(f"Impossible de créer le PDF pour {result['filename']}")
+            
+            # Log du nombre de PDFs créés
+            if pdf_count > 0:
+                st.success(f"✅ {pdf_count} PDF(s) créé(s) avec succès!")
             
             # Fichier JSON avec tous les détails
             zip_file.writestr('ocr_results.json', json.dumps(results, indent=2, ensure_ascii=False))
